@@ -1,6 +1,11 @@
 
 import streamlit as st
 import pandas as pd
+import openai
+import os
+
+# Configurar clave de OpenAI
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # Cargar el archivo Excel
 @st.cache_data
@@ -11,43 +16,48 @@ def cargar_datos():
 
 df = cargar_datos()
 
-# Diccionario de meses
-meses = {
-    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
-    "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
-    "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
-}
+# Función para generar un filtro a partir de una pregunta usando OpenAI
+def generar_consulta(pregunta):
+    prompt = f"""
+Tenés una tabla con las siguientes columnas: Cliente, Proyecto, Tarea, Apellido, Nombre, NombreCompleto, HorasImputadas, Año, Mes.
 
-def responder_pregunta(pregunta):
-    pregunta_lower = pregunta.lower()
+Convertí la siguiente pregunta de usuario en instrucciones claras de filtrado para aplicar sobre un DataFrame de pandas. Devolveme solo el código Python dentro de triple backticks.
 
-    if "cliente" in pregunta_lower and "horas" in pregunta_lower:
-        for cliente in df["Cliente"].dropna().unique():
-            if cliente.lower() in pregunta_lower:
-                total = df[df["Cliente"].str.lower() == cliente.lower()]["HorasImputadas"].sum()
-                return f"Se imputaron {total:.2f} horas al cliente '{cliente}'."
+Pregunta: {pregunta}
+"""
+    respuesta = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{ "role": "user", "content": prompt }],
+        temperature=0
+    )
 
-    if "horas" in pregunta_lower and any(mes in pregunta_lower for mes in meses):
-        for nombre in df["NombreCompleto"].dropna().unique():
-            if nombre.lower() in pregunta_lower:
-                for mes_nombre, mes_num in meses.items():
-                    if mes_nombre in pregunta_lower:
-                        total = df[(df["NombreCompleto"].str.lower() == nombre.lower()) & (df["Mes"] == mes_num)]["HorasImputadas"].sum()
-                        return f"{nombre} imputó {total:.2f} horas en {mes_nombre.capitalize()}."
+    contenido = respuesta.choices[0].message["content"]
 
-    if "tarea" in pregunta_lower and "periodo" in pregunta_lower:
-        resumen = df.groupby("Tarea")["HorasImputadas"].sum().reset_index()
-        resumen = resumen.sort_values(by="HorasImputadas", ascending=False)
-        return "Resumen de horas imputadas por tarea:\n\n" + resumen.head(10).to_string(index=False)
+    # Extraer código entre ```
+    if "```" in contenido:
+        codigo = contenido.split("```")[1]
+    else:
+        codigo = contenido
+    return codigo.strip()
 
-    return "Lo siento, esta pregunta aún no está cubierta por el prototipo del agente."
+# Interfaz de usuario
+st.title("🧠 Agente de Consulta de Horas (versión inteligente)")
+st.write("Consultá en lenguaje natural sobre la base de imputaciones de horas.")
 
-# Interfaz
-st.title("🧠 Agente de Consulta de Horas Imputadas")
-st.write("Hacé una pregunta en lenguaje natural sobre horas imputadas:")
-
-pregunta = st.text_input("Tu pregunta aquí")
+pregunta = st.text_input("Escribí tu pregunta:")
 
 if pregunta:
-    respuesta = responder_pregunta(pregunta)
-    st.success(respuesta)
+    with st.spinner("Interpretando tu consulta..."):
+        try:
+            codigo_filtro = generar_consulta(pregunta)
+            st.code(codigo_filtro, language="python")
+            resultado = eval(codigo_filtro, {"df": df})
+            if isinstance(resultado, pd.DataFrame):
+                st.dataframe(resultado)
+                st.success(f"Se encontraron {len(resultado)} registros.")
+            elif isinstance(resultado, (float, int)):
+                st.success(f"Resultado: {resultado:.2f} horas")
+            else:
+                st.write(resultado)
+        except Exception as e:
+            st.error(f"Hubo un error al procesar la consulta: {e}")
